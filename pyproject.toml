@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phone-lookup"
+version = "0.1.0"
+description = "CLI utilities for bulk phone number lookups backed by Redis"
+requires-python = ">=3.10"
+dependencies = [
+    "redis>=5.0.0,<6",
+]
+
+[project.scripts]
+phone-lookup = "phone_lookup.cli:run"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
