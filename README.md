@@ -1,34 +1,24 @@
 # Phone Lookup
 
-Bulk phone number lookup CLI backed by Redis and the NPANXX/OCN datasets.
+Bulk phone number lookup CLI backed by LMDB and the NPANXX/OCN datasets.
 
 ## Requirements
 
-- Docker + Docker Compose plugin
+- Python 3.10+
 
 ## Data preparation
 
-Extract the bundled data and import it into Redis:
+Extract the bundled data and import it into LMDB:
 
 ```bash
 make import
 ```
 
-The target unzips the CSV bundle, ensures the Redis container is running, then executes `phone-lookup import` from an ephemeral Python container on the same Docker network.
-
-## Running Redis manually
-
-If you only need Redis without importing data, you can start it independently:
-
-```bash
-docker compose up -d redis
-```
-
-Redis is addressable as `redis:6379` from other Docker services and is exposed on `localhost:6379` for convenience.
+The target unzips the CSV bundle, then executes `phone-lookup import`.
 
 ## CLI usage
 
-Perform lookups by invoking the `lookup` subcommand (defaults connect to the Docker Redis service, with an automatic fallback to `localhost` if you run the CLI directly on the host):
+Perform lookups by invoking the `lookup` subcommand:
 
 ```bash
 phone-lookup lookup --file numbers.txt --output results.txt
@@ -41,8 +31,6 @@ Import or re-import data with the `import` subcommand:
 ```bash
 phone-lookup import --npanxx-path data/raw/phoneplatinumwire.csv --ocn-path data/raw/ocn.csv
 ```
-
-Both subcommands connect to the Docker-hosted Redis by default; override the host and port only if you run Redis elsewhere.
 
 ## Development
 

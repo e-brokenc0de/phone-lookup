@@ -9,14 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-from redis import ConnectionError, Redis
+import lmdb
 from termcolor import colored
 
+from . import database
 from .importer import ensure_paths_exist, import_all
-
-DEFAULT_REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-DEFAULT_REDIS_PORT = 6379
-DEFAULT_REDIS_DB = 0
 
 ENABLE_COLOR = os.getenv("NO_COLOR") is None and (bool(os.getenv("FORCE_COLOR")) or sys.stdout.isatty())
 
@@ -87,14 +84,14 @@ def load_numbers(path: Path) -> list[str]:
     return numbers
 
 
-def lookup_number(redis: Redis, digits: str) -> tuple[bool, str, str]:
+def lookup_number(txn: lmdb.Transaction, digits: str) -> tuple[bool, str, str]:
     npa = digits[:3]
     nxx = digits[3:6]
     block = digits[6]
     candidates = (block, "A") if block != "A" else ("A",)
     for candidate in candidates:
         key = f"npanxx:{npa}{nxx}:{candidate}"
-        data = redis.hgetall(key)
+        data = database.hgetall(txn, key)
         if not data:
             continue
         ltype = data.get("LTYPE") or "UNKNOWN"
@@ -102,7 +99,7 @@ def lookup_number(redis: Redis, digits: str) -> tuple[bool, str, str]:
         common_name = ""
         if ocn:
             ocn_key = f"ocn:{ocn}"
-            ocn_data = redis.hgetall(ocn_key)
+            ocn_data = database.hgetall(txn, ocn_key)
             if ocn_data:
                 common_name = (
                     ocn_data.get("CommonName")
@@ -116,51 +113,26 @@ def lookup_number(redis: Redis, digits: str) -> tuple[bool, str, str]:
     return False, "UNKNOWN", "UNKNOWN"
 
 
-def run_lookup(redis: Redis, numbers: Iterable[str]) -> Iterator[LookupResult]:
-    for number in numbers:
-        normalized = normalize_number(number)
-        if not normalized:
-            yield LookupResult(number, None, "INVALID", "UNKNOWN", False)
-            continue
-        found, ltype, common_name = lookup_number(redis, normalized)
-        yield LookupResult(number, normalized, ltype, common_name, found)
-
-
-def add_redis_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--redis-host", default=DEFAULT_REDIS_HOST, help=argparse.SUPPRESS)
-    parser.add_argument("--redis-port", type=int, default=DEFAULT_REDIS_PORT, help=argparse.SUPPRESS)
-    parser.add_argument("--redis-db", type=int, default=DEFAULT_REDIS_DB, help=argparse.SUPPRESS)
-
-
-def connect_redis(parser: argparse.ArgumentParser, *, host: str, port: int, db: int) -> Redis:
-    attempted: list[str] = []
-    fallback_hosts: tuple[str, ...] = ()
-    if host == DEFAULT_REDIS_HOST and host != "localhost":
-        fallback_hosts = ("localhost",)
-
-    for candidate in (host, *fallback_hosts):
-        try:
-            redis_client = Redis(host=candidate, port=port, db=db, decode_responses=True)
-            if not redis_client.ping():
-                raise ConnectionError("Unable to ping Redis")
-            return redis_client
-        except (ConnectionError, OSError) as exc:
-            attempted.append(f"{candidate}:{port} -> {exc}")
-
-    attempts_message = "; ".join(attempted)
-    parser.error(f"Could not connect to Redis (attempted: {attempts_message})")
-    raise ConnectionError(attempts_message)
+def run_lookup(db: lmdb.Environment, numbers: Iterable[str]) -> Iterator[LookupResult]:
+    with db.begin() as txn:
+        for number in numbers:
+            normalized = normalize_number(number)
+            if not normalized:
+                yield LookupResult(number, None, "INVALID", "UNKNOWN", False)
+                continue
+            found, ltype, common_name = lookup_number(txn, normalized)
+            yield LookupResult(number, normalized, ltype, common_name, found)
 
 
 def handle_lookup(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     numbers = load_numbers(args.file)
     if not numbers:
         parser.error("Input file did not contain any phone numbers")
-    redis_client = connect_redis(parser, host=args.redis_host, port=args.redis_port, db=args.redis_db)
+    db = database.get_db(readonly=True)
     total = len(numbers)
     start = time.monotonic()
     with args.output.open("w", encoding="utf-8") as handle:
-        for idx, result in enumerate(run_lookup(redis_client, numbers), start=1):
+        for idx, result in enumerate(run_lookup(db, numbers), start=1):
             print(format_lookup_output(idx, total, result), flush=True)
             handle.write(result.as_output_line() + "\n")
     elapsed = time.monotonic() - start
@@ -175,8 +147,8 @@ def handle_lookup(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
 
 def handle_import(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     ensure_paths_exist((args.npanxx_path, args.ocn_path))
-    redis_client = connect_redis(parser, host=args.redis_host, port=args.redis_port, db=args.redis_db)
-    import_all(redis_client, args.npanxx_path, args.ocn_path)
+    db = database.get_db()
+    import_all(db, args.npanxx_path, args.ocn_path)
     print(colorize("Import complete.", "green", attrs=["bold"]))
     return 0
 
@@ -186,12 +158,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     lookup_parser = subparsers.add_parser("lookup", help="Perform bulk phone number lookups")
-    add_redis_arguments(lookup_parser)
     lookup_parser.add_argument("--file", required=True, type=Path, help="Path to input file containing phone numbers")
     lookup_parser.add_argument("--output", required=True, type=Path, help="File to write lookup results")
 
-    import_parser = subparsers.add_parser("import", help="Import NPANXX/OCN data into Redis")
-    add_redis_arguments(import_parser)
+    import_parser = subparsers.add_parser("import", help="Import NPANXX/OCN data into LMDB")
     import_parser.add_argument(
         "--npanxx-path",
         type=Path,

@@ -1,19 +1,20 @@
-"""Utilities for importing phone metadata into Redis."""
+"""Utilities for importing phone metadata into LMDB."""
 from __future__ import annotations
 
 import csv
 from pathlib import Path
 from typing import Iterable
 
-from redis import Redis
+import lmdb
+
+from . import database
 
 
-def load_npanxx(redis: Redis, path: Path, batch: int = 10_000) -> None:
-    """Load NPANXX data into Redis hashes."""
-    with path.open(newline="", encoding="utf-8") as handle:
+def load_npanxx(db: lmdb.Environment, path: Path) -> None:
+    """Load NPANXX data into LMDB."""
+    with db.begin(write=True) as txn, path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
-        pipe = redis.pipeline(transaction=False)
-        for idx, row in enumerate(reader, start=1):
+        for row in reader:
             key = f"npanxx:{row['NPA']}{row['NXX']}:{row['BLOCK_ID']}"
             mapping = {
                 "OCN": row.get("OCN", ""),
@@ -29,18 +30,14 @@ def load_npanxx(redis: Redis, path: Path, batch: int = 10_000) -> None:
                 "ADATE": row.get("ADATE", ""),
                 "EFFDATE": row.get("EFFDATE", ""),
             }
-            pipe.hset(key, mapping=mapping)
-            if idx % batch == 0:
-                pipe.execute()
-        pipe.execute()
+            database.hset(txn, key, mapping)
 
 
-def load_ocn(redis: Redis, path: Path, batch: int = 5_000) -> None:
-    """Load OCN data into Redis hashes."""
-    with path.open(newline="", encoding="utf-8") as handle:
+def load_ocn(db: lmdb.Environment, path: Path) -> None:
+    """Load OCN data into LMDB."""
+    with db.begin(write=True) as txn, path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
-        pipe = redis.pipeline(transaction=False)
-        for idx, row in enumerate(reader, start=1):
+        for row in reader:
             key = f"ocn:{row['OCN']}"
             mapping = {
                 "COMPANY": row.get("COMPANY", ""),
@@ -50,15 +47,12 @@ def load_ocn(redis: Redis, path: Path, batch: int = 5_000) -> None:
                 "SMS": row.get("SMS", ""),
                 "Rural": row.get("Rural", ""),
             }
-            pipe.hset(key, mapping=mapping)
-            if idx % batch == 0:
-                pipe.execute()
-        pipe.execute()
+            database.hset(txn, key, mapping)
 
 
-def import_all(redis: Redis, npanxx_path: Path, ocn_path: Path) -> None:
-    load_npanxx(redis, npanxx_path)
-    load_ocn(redis, ocn_path)
+def import_all(db: lmdb.Environment, npanxx_path: Path, ocn_path: Path) -> None:
+    load_npanxx(db, npanxx_path)
+    load_ocn(db, ocn_path)
 
 
 def ensure_paths_exist(paths: Iterable[Path]) -> None:
