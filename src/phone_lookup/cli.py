@@ -9,6 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
+try:  # Optional dependency that enables ANSI colors on Windows terminals.
+    import colorama
+except ImportError:  # pragma: no cover - only happens when colorama is absent.
+    colorama = None  # type: ignore[assignment]
+else:
+    colorama.init()
+
 from termcolor import colored
 
 from .importer import ensure_paths_exist, import_all
@@ -16,7 +23,12 @@ from .store import DEFAULT_MAP_SIZE, PhoneLookupStore
 
 DEFAULT_DB_PATH = Path(os.getenv("PHONE_LOOKUP_DB_PATH", "data/store"))
 
-ENABLE_COLOR = os.getenv("NO_COLOR") is None and (bool(os.getenv("FORCE_COLOR")) or sys.stdout.isatty())
+WINDOWS = os.name == "nt"
+ENABLE_COLOR = (
+    os.getenv("NO_COLOR") is None
+    and (bool(os.getenv("FORCE_COLOR")) or sys.stdout.isatty())
+    and (not WINDOWS or colorama is not None)
+)
 
 LINE_TYPE_LABELS = {
     "S": "LANDLINE",
