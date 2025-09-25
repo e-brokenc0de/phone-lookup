@@ -28,7 +28,7 @@ Redis is addressable as `redis:6379` from other Docker services and is exposed o
 
 ## CLI usage
 
-Perform lookups by invoking the `lookup` subcommand (defaults connect to the Docker Redis service):
+Perform lookups by invoking the `lookup` subcommand (defaults connect to the Docker Redis service, with an automatic fallback to `localhost` if you run the CLI directly on the host):
 
 ```bash
 phone-lookup lookup --file numbers.txt --output results.txt

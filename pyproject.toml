@@ -9,6 +9,7 @@ description = "CLI utilities for bulk phone number lookups backed by Redis"
 requires-python = ">=3.10"
 dependencies = [
     "redis>=5.0.0,<6",
+    "termcolor>=2.0.0,<3",
 ]
 
 [project.scripts]

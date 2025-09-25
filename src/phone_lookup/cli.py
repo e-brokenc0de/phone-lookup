@@ -2,18 +2,42 @@
 from __future__ import annotations
 
 import argparse
+import os
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from redis import ConnectionError, Redis
+from termcolor import colored
 
 from .importer import ensure_paths_exist, import_all
 
-DEFAULT_REDIS_HOST = "127.0.0.1"
+DEFAULT_REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 DEFAULT_REDIS_PORT = 6379
 DEFAULT_REDIS_DB = 0
 
+ENABLE_COLOR = os.getenv("NO_COLOR") is None and (bool(os.getenv("FORCE_COLOR")) or sys.stdout.isatty())
+
+LINE_TYPE_LABELS = {
+    "S": "LANDLINE",
+    "C": "WIRELESS",
+    "P": "PAGING",
+    "M": "MIXED",
+    "V": "VOIP",
+}
+
+
+def colorize(text: str, *args: Any, **kwargs: Any) -> str:
+    if ENABLE_COLOR:
+        return colored(text, *args, **kwargs)
+    return text
+
+
+def format_line_type(ltype: str) -> str:
+    label = LINE_TYPE_LABELS.get(ltype.upper()) if ltype else None
+    return label if label else ltype
 
 @dataclass(frozen=True)
 class LookupResult:
@@ -27,7 +51,25 @@ class LookupResult:
 
     def as_output_line(self) -> str:
         number = self.normalized or self.original
-        return f"{number}:{self.ltype}:{self.common_name}"
+        return f"{number}:{format_line_type(self.ltype)}:{self.common_name}"
+
+
+def format_lookup_output(idx: int, total: int, result: LookupResult) -> str:
+    number_display = result.normalized or result.original
+    progress = colorize(f"{idx}/{total}", "cyan")
+    if result.found:
+        number = colorize(number_display, "green", attrs=["bold"])
+        ltype = colorize(format_line_type(result.ltype), "green")
+        common_name = colorize(result.common_name, "white")
+    elif result.ltype == "INVALID":
+        number = colorize(number_display, "red", attrs=["bold"])
+        ltype = colorize(result.ltype, "red", attrs=["bold"])
+        common_name = colorize(result.common_name, "red")
+    else:
+        number = colorize(number_display, "yellow", attrs=["bold"])
+        ltype = colorize(format_line_type(result.ltype), "yellow")
+        common_name = colorize(result.common_name, "yellow")
+    return f"{progress} {number} {ltype} {common_name}"
 
 
 def normalize_number(raw: str) -> Optional[str]:
@@ -91,14 +133,23 @@ def add_redis_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def connect_redis(parser: argparse.ArgumentParser, *, host: str, port: int, db: int) -> Redis:
-    try:
-        redis_client = Redis(host=host, port=port, db=db, decode_responses=True)
-        if not redis_client.ping():
-            raise ConnectionError("Unable to ping Redis")
-        return redis_client
-    except ConnectionError as exc:
-        parser.error(f"Could not connect to Redis: {exc}")
-        raise  # unreachable but keeps type checkers happy
+    attempted: list[str] = []
+    fallback_hosts: tuple[str, ...] = ()
+    if host == DEFAULT_REDIS_HOST and host != "localhost":
+        fallback_hosts = ("localhost",)
+
+    for candidate in (host, *fallback_hosts):
+        try:
+            redis_client = Redis(host=candidate, port=port, db=db, decode_responses=True)
+            if not redis_client.ping():
+                raise ConnectionError("Unable to ping Redis")
+            return redis_client
+        except (ConnectionError, OSError) as exc:
+            attempted.append(f"{candidate}:{port} -> {exc}")
+
+    attempts_message = "; ".join(attempted)
+    parser.error(f"Could not connect to Redis (attempted: {attempts_message})")
+    raise ConnectionError(attempts_message)
 
 
 def handle_lookup(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
@@ -106,13 +157,19 @@ def handle_lookup(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     if not numbers:
         parser.error("Input file did not contain any phone numbers")
     redis_client = connect_redis(parser, host=args.redis_host, port=args.redis_port, db=args.redis_db)
-    results = list(run_lookup(redis_client, numbers))
-    total = len(results)
+    total = len(numbers)
+    start = time.monotonic()
     with args.output.open("w", encoding="utf-8") as handle:
-        for idx, result in enumerate(results, start=1):
-            number_display = result.normalized or result.original
-            print(f"{idx}/{total} {number_display} {result.ltype} {result.common_name}")
+        for idx, result in enumerate(run_lookup(redis_client, numbers), start=1):
+            print(format_lookup_output(idx, total, result), flush=True)
             handle.write(result.as_output_line() + "\n")
+    elapsed = time.monotonic() - start
+    completion_line = colorize(
+        f"Completed {total} lookups in {elapsed:.2f} seconds.",
+        "green",
+        attrs=["bold"],
+    )
+    print(f"\n{completion_line}\n", flush=True)
     return 0
 
 
@@ -120,7 +177,7 @@ def handle_import(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     ensure_paths_exist((args.npanxx_path, args.ocn_path))
     redis_client = connect_redis(parser, host=args.redis_host, port=args.redis_port, db=args.redis_db)
     import_all(redis_client, args.npanxx_path, args.ocn_path)
-    print("Import complete.")
+    print(colorize("Import complete.", "green", attrs=["bold"]))
     return 0
 
 
